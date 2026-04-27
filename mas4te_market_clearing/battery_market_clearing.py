@@ -91,14 +91,20 @@ class BatteryClearing(MarketRole):
     def set_model_restrictions(
         self,
         model: pyo.ConcreteModel,
-        supply_orders_by_loc: dict[object, list[Order]],
-        demand_orders_by_loc: dict[object, list[Order]],
-        exclusive_groups: dict[object, list[Order]],
+        supply_orders_by_loc: dict[str, list[Order]],
+        demand_orders_by_loc: dict[str, list[Order]],
+        exclusive_groups: dict[str, list[Order]],
     ) -> None:
         """Sets the model restrictions.
 
         Adds one supply==demand balance constraint per location and one
         exclusivity constraint per non-trivial exclusive group.
+
+        Args:
+            model: The Pyomo model to add the restrictions to.
+            supply_orders_by_loc: A dictionary of supply orders by location with location as key.
+            demand_orders_by_loc: A dictionary of demand orders by location with location as key.
+            exclusive_groups: A dictionary of exclusive groups by group id with group id as key.
         """
 
         locations = sorted(
@@ -306,7 +312,7 @@ class BatteryClearing(MarketRole):
         single-order group has no coupling effect.
         """
         field_name = self._exclusive_link_field()
-        groups: dict[object, list[Order]] = defaultdict(list)
+        groups = defaultdict(list)
         for order in orderbook:
             group_id = order.get(field_name)
             if group_id is None:
@@ -320,8 +326,8 @@ class BatteryClearing(MarketRole):
         locations = self._resolve_locations(orderbook)
 
         # group orders by location and direction
-        supply_orders_by_loc: dict[object, list[Order]] = defaultdict(list)
-        demand_orders_by_loc: dict[object, list[Order]] = defaultdict(list)
+        supply_orders_by_loc = defaultdict(list)
+        demand_orders_by_loc = defaultdict(list)
         for order in orderbook:
             loc = order.get("node")
             if loc not in locations:
@@ -372,7 +378,7 @@ class BatteryClearing(MarketRole):
         )
 
         # uniform pricing per location (each market clears at its own price)
-        meta: list[dict] = []
+        meta = []
         for loc in locations:
             loc_accepted = [o for o in accepted_orders if o.get("node") == loc]
             loc_rejected = [o for o in rejected_orders if o.get("node") == loc]
@@ -407,6 +413,6 @@ class BatteryClearing(MarketRole):
                 )
             )
 
-        flows: list = []
+        flows = []
 
         return accepted_orders, rejected_orders, meta, flows
