@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Christoph Komanns
+#
+# SPDX-License-Identifier: MIT
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mas4te-market-clearing"
+version = "0.1.0"
+description = ""
+authors = [{name = "Christoph Komanns", email = "komanns@fh-aachen.de"}]
+license = {text = "MIT"}
+readme = "README.md"
+keywords = ["mas4te", "market", "clearing mechanism", "assume", "simulation"]
+
+classifiers=[
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "assume-framework >=0.6.0",
+    "pyomo >=6.8.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "ruff >=0.4.9",
+    "pytest >=7.2.2",
+    "pytest-cov >=4.1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/MAS4TE/market-clearing"
+Issues = "https://github.com/MAS4TE/market-clearing/issues"
+
+[tool.setuptools.packages]
+find = {}
+
+[tool.ruff]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "G", "PIE"]
+ignore = ["E501", "G004", "E731"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = [
+    "I001", # allow unsorted imports in __init__.py
+    "F401", # allow unused imports in __init__.py
+]
+"tests/*" = [
+    "S101", # allow assert statements for pytest
+    "ARG",  # allow unused arguments for pytest fixtures
+    "F841", # allow unused local variables
+]
