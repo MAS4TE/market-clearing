@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import logging
+from collections import defaultdict
 from datetime import timedelta
 from operator import itemgetter
 
@@ -13,7 +14,7 @@ from assume.markets.base_market import MarketRole
 logger = logging.getLogger(__name__)
 
 
-def calculate_meta(accepted_supply_orders, accepted_demand_orders, product):
+def calculate_meta(accepted_supply_orders, accepted_demand_orders, product, node=None):
     supply_volume = sum(map(itemgetter("accepted_volume"), accepted_supply_orders))
     demand_volume = -sum(map(itemgetter("accepted_volume"), accepted_demand_orders))
     prices = list(map(itemgetter("accepted_price"), accepted_supply_orders)) or [0]
@@ -34,7 +35,7 @@ def calculate_meta(accepted_supply_orders, accepted_demand_orders, product):
         "price": avg_price,
         "max_price": max(prices),
         "min_price": min(prices),
-        "node": None,
+        "node": node,
         "product_start": product[0],
         "product_end": product[1],
         "only_hours": product[2],
@@ -42,25 +43,106 @@ def calculate_meta(accepted_supply_orders, accepted_demand_orders, product):
 
 
 class BatteryClearing(MarketRole):
+    """Joint market clearing for one or more battery markets (locations).
+
+    The clearing can simultaneously clear several locations (e.g. a market at
+    location ``A`` and one at location ``B``) and supports cross-market
+    *exclusive* bids: orders that share the same exclusive-group identifier
+    will jointly satisfy ``sum(accepted_volume / volume) <= 1`` so that, in
+    particular, a bid that is fully accepted on market A will be fully
+    rejected on market B.
+
+    Configuration via ``MarketConfig.param_dict``:
+
+    - ``allowed_c_rates``: existing whitelist of permitted C-rates.
+    - ``locations`` (optional): list of location identifiers handled by this
+      clearing instance, e.g. ``["A", "B"]``. If omitted, the clearing infers
+      the locations from the orders' ``node`` field (legacy single-market
+      behaviour, where every order may have ``node=None``).
+    - ``exclusive_link_field`` (optional, default ``"exclusive_id"``): name of
+      the order field that identifies the exclusive group. Orders sharing the
+      same value in this field are mutually exclusive.
+    """
+
     def __init__(self, marketconfig: MarketConfig):
         super().__init__(marketconfig)
 
+    def _configured_locations(self) -> list:
+        return list(self.marketconfig.param_dict.get("locations", []) or [])
+
+    def _exclusive_link_field(self) -> str:
+        return self.marketconfig.param_dict.get("exclusive_link_field", "exclusive_id")
+
     def validate_orderbook(self, orderbook: Orderbook, agent_addr) -> None:
         allowed_c_rates = self.marketconfig.param_dict["allowed_c_rates"]
+        locations = self._configured_locations()
         for order in orderbook:
             if order["c_rate"] not in allowed_c_rates:
                 raise ValueError(f"{order['c_rate']} is not in {allowed_c_rates}")
+            if locations:
+                node = order.get("node")
+                if node not in locations:
+                    raise ValueError(
+                        f"Order's node {node!r} is not in allowed locations {locations}"
+                    )
 
         super().validate_orderbook(orderbook, agent_addr)
 
-    def set_model_restrictions(self, model: pyo.ConcreteModel) -> None:
-        """Sets the model restrictions."""
+    def set_model_restrictions(
+        self,
+        model: pyo.ConcreteModel,
+        supply_orders_by_loc: dict[object, list[Order]],
+        demand_orders_by_loc: dict[object, list[Order]],
+        exclusive_groups: dict[object, list[Order]],
+    ) -> None:
+        """Sets the model restrictions.
 
-        # Restrict the supply volume to be less than or equal to the demand volume
-        model.restrict_product_balance = pyo.Constraint(
-            expr=sum(model.supply_volume[i] for i in model.supply_volume)
-            == sum(model.demand_volume[i] for i in model.demand_volume)
+        Adds one supply==demand balance constraint per location and one
+        exclusivity constraint per non-trivial exclusive group.
+        """
+
+        locations = sorted(
+            set(supply_orders_by_loc) | set(demand_orders_by_loc),
+            key=lambda x: (x is None, x),
         )
+        model.locations = pyo.Set(initialize=locations, ordered=True)
+
+        def _balance_rule(m, loc):
+            supply_ids = [o["bid_id"] for o in supply_orders_by_loc.get(loc, [])]
+            demand_ids = [o["bid_id"] for o in demand_orders_by_loc.get(loc, [])]
+            if not supply_ids and not demand_ids:
+                return pyo.Constraint.Skip
+            return sum(m.supply_volume[i] for i in supply_ids) == sum(
+                m.demand_volume[i] for i in demand_ids
+            )
+
+        model.restrict_product_balance = pyo.Constraint(
+            model.locations, rule=_balance_rule
+        )
+
+        if exclusive_groups:
+            group_ids = list(exclusive_groups.keys())
+            model.exclusive_groups = pyo.Set(initialize=group_ids, ordered=True)
+
+            def _exclusivity_rule(m, gid):
+                terms = []
+                for order in exclusive_groups[gid]:
+                    max_volume = abs(order["volume"])
+                    if max_volume == 0:
+                        continue
+                    var = (
+                        m.supply_volume[order["bid_id"]]
+                        if order["volume"] > 0
+                        else m.demand_volume[order["bid_id"]]
+                    )
+                    terms.append(var / max_volume)
+                if not terms:
+                    return pyo.Constraint.Skip
+                return sum(terms) <= 1
+
+            model.restrict_exclusive_groups = pyo.Constraint(
+                model.exclusive_groups, rule=_exclusivity_rule
+            )
 
     def set_model_objective(self, model: pyo.ConcreteModel) -> None:
         """Sets the model objective function."""
@@ -198,70 +280,133 @@ class BatteryClearing(MarketRole):
         # Return the highest awarded price
         return max(all_awarded_prices)
 
+    def _resolve_locations(self, orderbook: Orderbook) -> list:
+        """Determine which locations the current clearing run covers.
+
+        Uses the configured ``locations`` from ``MarketConfig.param_dict`` if
+        provided. Otherwise infers them from the orders' ``node`` field, which
+        keeps the legacy single-market behaviour (every order has
+        ``node=None``) intact.
+        """
+        configured = self._configured_locations()
+        if configured:
+            return configured
+        observed = {order.get("node") for order in orderbook}
+        if observed:
+            # Stable order: non-None first, then None at the end.
+            return sorted(observed, key=lambda x: (x is None, x))
+        return [None]
+
+    def _collect_exclusive_groups(
+        self, orderbook: Orderbook
+    ) -> dict[object, list[Order]]:
+        """Collect orders into exclusive groups.
+
+        A group is only retained if it contains at least two orders, since a
+        single-order group has no coupling effect.
+        """
+        field_name = self._exclusive_link_field()
+        groups: dict[object, list[Order]] = defaultdict(list)
+        for order in orderbook:
+            group_id = order.get(field_name)
+            if group_id is None:
+                continue
+            groups[group_id].append(order)
+        return {gid: orders for gid, orders in groups.items() if len(orders) > 1}
+
     def clear(
         self, orderbook: Orderbook, market_products
     ) -> tuple[Orderbook, Orderbook, list[dict]]:
-        # get demand and supply orders from orderbook
-        demand_orders = [x for x in orderbook if x["volume"] < 0]
-        supply_orders = [x for x in orderbook if x["volume"] > 0]
+        locations = self._resolve_locations(orderbook)
+
+        # group orders by location and direction
+        supply_orders_by_loc: dict[object, list[Order]] = defaultdict(list)
+        demand_orders_by_loc: dict[object, list[Order]] = defaultdict(list)
+        for order in orderbook:
+            loc = order.get("node")
+            if loc not in locations:
+                raise ValueError(
+                    f"Order has unknown location {loc!r}; allowed: {locations}"
+                )
+            if order["volume"] > 0:
+                supply_orders_by_loc[loc].append(order)
+            elif order["volume"] < 0:
+                demand_orders_by_loc[loc].append(order)
+
+        all_supply_orders = [
+            order for orders in supply_orders_by_loc.values() for order in orders
+        ]
+        all_demand_orders = [
+            order for orders in demand_orders_by_loc.values() for order in orders
+        ]
+
+        # collect exclusive groups across markets (e.g. one bid on A linked to
+        # its mirror bid on B)
+        exclusive_groups = self._collect_exclusive_groups(orderbook)
 
         # create pyomo model for solving
         model = pyo.ConcreteModel()
 
-        # add supply and demand variables to the model
-        self.add_supply_vars(model, supply_orders)
-        self.add_demand_vars(model, demand_orders)
+        # add supply and demand variables to the model (flat over all
+        # locations because bid_ids are globally unique)
+        self.add_supply_vars(model, all_supply_orders)
+        self.add_demand_vars(model, all_demand_orders)
 
-        # add restrictions to the model
-        self.set_model_restrictions(model)
+        # add restrictions to the model: per-location balance + exclusivity
+        self.set_model_restrictions(
+            model,
+            supply_orders_by_loc,
+            demand_orders_by_loc,
+            exclusive_groups,
+        )
 
-        # set the model objective
+        # set the model objective (joint welfare across all markets)
         self.set_model_objective(model)
 
-        # run optimization (clearing)
+        # run optimization (joint clearing)
         self.solve_model(model, solver="highs")
 
         # get accepted orders
         accepted_orders, rejected_orders = self.get_accepted_rejected_orders(
-            model, supply_orders, demand_orders
+            model, all_supply_orders, all_demand_orders
         )
 
-        accepted_demand_orders = [
-            x for x in accepted_orders if x["accepted_volume"] < 0
-        ]
-        accepted_supply_orders = [
-            x for x in accepted_orders if x["accepted_volume"] > 0
-        ]
+        # uniform pricing per location (each market clears at its own price)
+        meta: list[dict] = []
+        for loc in locations:
+            loc_accepted = [o for o in accepted_orders if o.get("node") == loc]
+            loc_rejected = [o for o in rejected_orders if o.get("node") == loc]
+            loc_accepted_supply = [o for o in loc_accepted if o["accepted_volume"] > 0]
+            loc_accepted_demand = [o for o in loc_accepted if o["accepted_volume"] < 0]
 
-        # use uniform pricing
-        if accepted_orders:
-            clear_price = float(max(map(itemgetter("price"), accepted_supply_orders)))
-        else:
-            clear_price = 0
+            if loc_accepted_supply:
+                clear_price = float(max(map(itemgetter("price"), loc_accepted_supply)))
+            else:
+                clear_price = 0
 
-        for order in accepted_orders:
-            order["accepted_price"] = clear_price
+            for order in loc_accepted:
+                order["accepted_price"] = clear_price
 
-        # set accepted volume to 0 and price to clear price for rejected orders
-        for order in rejected_orders:
-            order["accepted_volume"] = 0
-            order["accepted_price"] = clear_price
+            for order in loc_rejected:
+                order["accepted_volume"] = 0
+                order["accepted_price"] = clear_price
 
-        print(f"Clearing price: {clear_price * 100} ct./kWh")
-        print(
-            f"{sum([abs(x['accepted_volume']) for x in accepted_demand_orders])} kWh traded volume"
-        )
-        print("----------------------------------------")
-
-        meta = []
-
-        meta.append(
-            calculate_meta(
-                accepted_supply_orders,
-                accepted_demand_orders,
-                market_products[0],
+            label = f"[{loc}] " if loc is not None else ""
+            print(f"{label}Clearing price: {clear_price * 100} ct./kWh")
+            print(
+                f"{label}{sum(abs(o['accepted_volume']) for o in loc_accepted_demand)} kWh traded volume"
             )
-        )
-        flows = []
+            print("----------------------------------------")
+
+            meta.append(
+                calculate_meta(
+                    loc_accepted_supply,
+                    loc_accepted_demand,
+                    market_products[0],
+                    node=loc,
+                )
+            )
+
+        flows: list = []
 
         return accepted_orders, rejected_orders, meta, flows
