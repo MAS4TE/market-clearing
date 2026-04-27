@@ -3,6 +3,7 @@ import sys
 from datetime import datetime, timedelta
 from types import ModuleType, SimpleNamespace
 
+import pyomo.environ as pyo
 import pytest
 
 
@@ -39,12 +40,33 @@ BatteryClearing = module.BatteryClearing
 calculate_meta = module.calculate_meta
 
 
+def _get_available_solver():
+    for solver_name in ("gurobi", "highs", "appsi_highs", "glpk", "cbc"):
+        try:
+            if pyo.SolverFactory(solver_name).available(False):
+                return solver_name
+        except Exception:
+            continue
+    return None
+
+
+SOLVER_NAME = _get_available_solver()
+
+
+class IntegrationBatteryClearing(BatteryClearing):
+    def solve_model(self, model: pyo.ConcreteModel, solver: str = "highs") -> None:
+        if SOLVER_NAME is None:
+            pytest.skip(
+                "No supported LP solver available (highs/appsi_highs/glpk/cbc)."
+            )
+        super().solve_model(model, solver=SOLVER_NAME)
+
+
 def _make_role(allowed_c_rates=(0.5, 1.0)):
-    role = BatteryClearing.__new__(BatteryClearing)
-    role.marketconfig = SimpleNamespace(
+    marketconfig = SimpleNamespace(
         param_dict={"allowed_c_rates": list(allowed_c_rates)}
     )
-    return role
+    return IntegrationBatteryClearing(marketconfig)
 
 
 def test_calculate_meta_with_weighted_average():
@@ -85,22 +107,19 @@ def test_calculate_meta_without_supply_orders_defaults_to_zero_price():
     assert meta["max_price"] == 0
 
 
-def test_validate_orderbook_rejects_disallowed_c_rate(monkeypatch):
+def test_validate_orderbook_rejects_disallowed_c_rate():
     role = _make_role(allowed_c_rates=(0.5, 1.0))
-    called = {"count": 0}
-
-    def _super_validate(*_args, **_kwargs):
-        called["count"] += 1
-
-    monkeypatch.setattr(module.MarketRole, "validate_orderbook", _super_validate)
 
     with pytest.raises(ValueError, match="is not in"):
         role.validate_orderbook([{"c_rate": 2.0}], agent_addr="agent")
 
-    assert called["count"] == 0
+
+def test_validate_orderbook_accepts_allowed_c_rates():
+    role = _make_role(allowed_c_rates=(0.5, 1.0))
+    role.validate_orderbook([{"c_rate": 0.5}, {"c_rate": 1.0}], agent_addr="agent")
 
 
-def test_clear_assigns_uniform_price_and_rejects_unawarded_orders(monkeypatch):
+def test_clear_assigns_uniform_price_and_rejects_unawarded_orders_with_real_solver():
     role = _make_role()
     orderbook = [
         {"bid_id": "s1", "volume": 5, "price": 12},
@@ -108,14 +127,6 @@ def test_clear_assigns_uniform_price_and_rejects_unawarded_orders(monkeypatch):
         {"bid_id": "d1", "volume": -3, "price": 20},
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
-
-    def _fake_solve(model, solver="highs"):
-        del solver
-        model.supply_volume["s1"].value = 3
-        model.supply_volume["s2"].value = 0
-        model.demand_volume["d1"].value = 3
-
-    monkeypatch.setattr(role, "solve_model", _fake_solve)
 
     accepted_orders, rejected_orders, meta, flows = role.clear(orderbook, [product])
 
@@ -129,20 +140,20 @@ def test_clear_assigns_uniform_price_and_rejects_unawarded_orders(monkeypatch):
     assert flows == []
 
 
-def test_clear_raises_when_only_demand_is_awarded(monkeypatch):
+def test_clear_no_trade_with_real_solver_sets_zero_price():
     role = _make_role()
     orderbook = [
         {"bid_id": "s1", "volume": 5, "price": 12},
-        {"bid_id": "d1", "volume": -5, "price": 20},
+        {"bid_id": "d1", "volume": -5, "price": 10},
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
 
-    def _inconsistent_solve(model, solver="highs"):
-        del solver
-        model.supply_volume["s1"].value = 0
-        model.demand_volume["d1"].value = 1
+    accepted_orders, rejected_orders, meta, flows = role.clear(orderbook, [product])
 
-    monkeypatch.setattr(role, "solve_model", _inconsistent_solve)
-
-    with pytest.raises(ValueError):
-        role.clear(orderbook, [product])
+    assert accepted_orders == []
+    assert {order["bid_id"] for order in rejected_orders} == {"s1", "d1"}
+    assert all(order["accepted_volume"] == 0 for order in rejected_orders)
+    assert all(order["accepted_price"] == 0 for order in rejected_orders)
+    assert meta[0]["supply_volume"] == 0
+    assert meta[0]["demand_volume"] == 0
+    assert flows == []
