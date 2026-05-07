@@ -13,6 +13,28 @@ from assume.markets.base_market import MarketRole
 logger = logging.getLogger(__name__)
 
 
+def validate_unique_bid_ids(orderbook: Orderbook) -> None:
+    """Reject orderbooks where ``bid_id`` is reused.
+
+    Supply/demand variables and prices are indexed only by ``bid_id`` in the
+    Pyomo model; duplicates silently merge orders and corrupt the optimum.
+    """
+    seen: set[object] = set()
+    duplicate_ids: set[object] = set()
+    for order in orderbook:
+        bid_id = order["bid_id"]
+        if bid_id in seen:
+            duplicate_ids.add(bid_id)
+        seen.add(bid_id)
+    if duplicate_ids:
+        # set order is arbitrary; stringify for a readable message
+        names = ", ".join(str(bid_id) for bid_id in sorted(duplicate_ids, key=str))
+        raise ValueError(
+            f"Same bid_id used more than once: {names}. "
+            "Give every order its own bid_id, otherwise several orders collapse into one variable."
+        )
+
+
 def calculate_meta(accepted_supply_orders, accepted_demand_orders, product):
     supply_volume = sum(map(itemgetter("accepted_volume"), accepted_supply_orders))
     demand_volume = -sum(map(itemgetter("accepted_volume"), accepted_demand_orders))
@@ -201,6 +223,8 @@ class BatteryClearing(MarketRole):
     def clear(
         self, orderbook: Orderbook, market_products
     ) -> tuple[Orderbook, Orderbook, list[dict]]:
+        validate_unique_bid_ids(orderbook)
+
         # get demand and supply orders from orderbook
         demand_orders = [x for x in orderbook if x["volume"] < 0]
         supply_orders = [x for x in orderbook if x["volume"] > 0]
