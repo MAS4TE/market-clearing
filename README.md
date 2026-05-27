@@ -45,7 +45,7 @@ pip install -r requirements.txt
 - `accepted_orders`: Orders with `accepted_volume != 0`, including `accepted_price`.
 - `rejected_orders`: Orders with `accepted_volume == 0`, including `accepted_price`.
 - `meta`: List of aggregated metrics, **one entry per cleared location**
-  (e.g. supply/demand volume, uniform price, product interval, `node`).
+  (e.g. supply/demand volume, uniform price, product interval, `location`).
 - `flows`: Currently an empty list.
 
 ## Multi-Market / Exclusive Bids
@@ -53,7 +53,7 @@ pip install -r requirements.txt
 `BatteryClearing` can jointly clear several markets (e.g. one at location `A`
 and one at location `B`) in a single optimization run. Each location keeps its
 own supply/demand balance and its own uniform clearing price; orders are
-assigned to a market via the standard `node` field of `Order`.
+assigned to a market via the `location` field of `Order` (legacy: `node`).
 
 Bids on different markets can be linked to be **mutually exclusive**: e.g. a
 bidder may place the same offer on market `A` and on market `B` and require
@@ -75,14 +75,14 @@ would require a MIP solver.)
 | Key | Required | Description |
 | --- | --- | --- |
 | `allowed_c_rates` | yes | Whitelist of permitted C-rates per order. |
-| `locations` | optional | List of locations handled by this clearing instance, e.g. `["A", "B"]`. If omitted, the clearing infers locations from the orders' `node` field (legacy single-market mode). |
+| `locations` | optional | List of locations handled by this clearing instance, e.g. `["A", "B"]`. If omitted, the clearing infers locations from the orders' `location` field (legacy: `node`, single-market mode). |
 | `exclusive_link_field` | optional | Name of the order field identifying the exclusive group. Defaults to `"exclusive_id"`. |
 
 ### Required `Order` fields
 
 In addition to the standard ASSUME `Order` fields:
 
-- `node`: location identifier (e.g. `"A"` or `"B"`).
+- `location`: location identifier (e.g. `"A"` or `"B"`). (`node` is accepted as legacy alias.)
 - `c_rate`: as before.
 - `exclusive_id` (or whatever `exclusive_link_field` points at): identifier
   shared by all orders in the same exclusive group. Set to `None` (or omit) if

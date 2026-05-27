@@ -36,7 +36,12 @@ def validate_unique_bid_ids(orderbook: Orderbook) -> None:
         )
 
 
-def calculate_meta(accepted_supply_orders, accepted_demand_orders, product, node=None):
+def calculate_meta(
+    accepted_supply_orders,
+    accepted_demand_orders,
+    product,
+    location=None,
+):
     supply_volume = sum(map(itemgetter("accepted_volume"), accepted_supply_orders))
     demand_volume = -sum(map(itemgetter("accepted_volume"), accepted_demand_orders))
     prices = list(map(itemgetter("accepted_price"), accepted_supply_orders)) or [0]
@@ -57,7 +62,7 @@ def calculate_meta(accepted_supply_orders, accepted_demand_orders, product, node
         "price": avg_price,
         "max_price": max(prices),
         "min_price": min(prices),
-        "node": node,
+        "location": location,
         "product_start": product[0],
         "product_end": product[1],
         "only_hours": product[2],
@@ -79,8 +84,8 @@ class BatteryClearing(MarketRole):
     - ``allowed_c_rates``: existing whitelist of permitted C-rates.
     - ``locations`` (optional): list of location identifiers handled by this
       clearing instance, e.g. ``["A", "B"]``. If omitted, the clearing infers
-      the locations from the orders' ``node`` field (legacy single-market
-      behaviour, where every order may have ``node=None``).
+      the locations from the orders' ``location`` field (legacy single-market
+      behaviour, where every order may have ``location=None``).
     - ``exclusive_link_field`` (optional, default ``"exclusive_id"``): name of
       the order field that identifies the exclusive group. Orders sharing the
       same value in this field are mutually exclusive.
@@ -102,10 +107,10 @@ class BatteryClearing(MarketRole):
             if order["c_rate"] not in allowed_c_rates:
                 raise ValueError(f"{order['c_rate']} is not in {allowed_c_rates}")
             if locations:
-                node = order.get("node")
-                if node not in locations:
+                location = _order_location(order)
+                if location not in locations:
                     raise ValueError(
-                        f"Order's node {node!r} is not in allowed locations {locations}"
+                        f"Order's location {location!r} is not in allowed locations {locations}"
                     )
 
         super().validate_orderbook(orderbook, agent_addr)
@@ -312,14 +317,14 @@ class BatteryClearing(MarketRole):
         """Determine which locations the current clearing run covers.
 
         Uses the configured ``locations`` from ``MarketConfig.param_dict`` if
-        provided. Otherwise infers them from the orders' ``node`` field, which
+        provided. Otherwise infers them from the orders' ``location`` field, which
         keeps the legacy single-market behaviour (every order has
-        ``node=None``) intact.
+        ``location=None``) intact.
         """
         configured = self._configured_locations()
         if configured:
             return configured
-        observed = {order.get("node") for order in orderbook}
+        observed = {_order_location(order) for order in orderbook}
         if observed:
             # Stable order: non-None first, then None at the end.
             return sorted(observed, key=lambda x: (x is None, x))
@@ -353,7 +358,7 @@ class BatteryClearing(MarketRole):
         supply_orders_by_loc = defaultdict(list)
         demand_orders_by_loc = defaultdict(list)
         for order in orderbook:
-            loc = order.get("node")
+            loc = _order_location(order)
             if loc not in locations:
                 raise ValueError(
                     f"Order has unknown location {loc!r}; allowed: {locations}"
@@ -404,8 +409,8 @@ class BatteryClearing(MarketRole):
         # uniform pricing per location (each market clears at its own price)
         meta = []
         for loc in locations:
-            loc_accepted = [o for o in accepted_orders if o.get("node") == loc]
-            loc_rejected = [o for o in rejected_orders if o.get("node") == loc]
+            loc_accepted = [o for o in accepted_orders if _order_location(o) == loc]
+            loc_rejected = [o for o in rejected_orders if _order_location(o) == loc]
             loc_accepted_supply = [o for o in loc_accepted if o["accepted_volume"] > 0]
             loc_accepted_demand = [o for o in loc_accepted if o["accepted_volume"] < 0]
 
@@ -433,10 +438,22 @@ class BatteryClearing(MarketRole):
                     loc_accepted_supply,
                     loc_accepted_demand,
                     market_products[0],
-                    node=loc,
+                    location=loc,
                 )
             )
 
         flows = []
 
         return accepted_orders, rejected_orders, meta, flows
+
+
+def _order_location(order: Order) -> object:
+    """Return the location identifier for an order.
+
+    Accept both the new ``location`` field and the legacy ``node`` field so
+    existing orderbooks keep working.
+    """
+
+    if "location" in order:
+        return order.get("location")
+    return order.get("node")
