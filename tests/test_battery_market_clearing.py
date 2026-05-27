@@ -149,9 +149,8 @@ def test_clear_assigns_uniform_price_and_rejects_unawarded_orders_with_real_solv
 
     assert {order["bid_id"] for order in accepted_orders} == {"s1", "d1"}
     assert {order["bid_id"] for order in rejected_orders} == {"s2"}
-    assert all(
-        order["accepted_price"] == 12 for order in accepted_orders + rejected_orders
-    )
+    assert all(order["accepted_price"] == 12 for order in accepted_orders)
+    assert all(order["accepted_price"] == 0 for order in rejected_orders)
     assert meta[0]["supply_volume"] == 3
     assert meta[0]["demand_volume"] == 3
     assert flows == []
