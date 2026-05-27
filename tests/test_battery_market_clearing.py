@@ -62,10 +62,18 @@ class IntegrationBatteryClearing(BatteryClearing):
         super().solve_model(model, solver=SOLVER_NAME)
 
 
-def _make_role(allowed_c_rates=(0.5, 1.0)):
-    marketconfig = SimpleNamespace(
-        param_dict={"allowed_c_rates": list(allowed_c_rates)}
-    )
+def _make_role(
+    allowed_c_rates=(0.5, 1.0),
+    *,
+    locations=None,
+    exclusive_link_field="exclusive_id",
+):
+    param_dict = {"allowed_c_rates": list(allowed_c_rates)}
+    if locations is not None:
+        param_dict["locations"] = list(locations)
+    if exclusive_link_field is not None:
+        param_dict["exclusive_link_field"] = exclusive_link_field
+    marketconfig = SimpleNamespace(param_dict=param_dict)
     return IntegrationBatteryClearing(marketconfig)
 
 
@@ -119,6 +127,15 @@ def test_validate_orderbook_accepts_allowed_c_rates():
     role.validate_orderbook([{"c_rate": 0.5}, {"c_rate": 1.0}], agent_addr="agent")
 
 
+def test_validate_orderbook_rejects_node_outside_configured_locations():
+    role = _make_role(locations=("A", "B"))
+    with pytest.raises(ValueError, match="allowed locations"):
+        role.validate_orderbook(
+            [{"c_rate": 1.0, "node": "C"}],
+            agent_addr="agent",
+        )
+
+
 def test_clear_assigns_uniform_price_and_rejects_unawarded_orders_with_real_solver():
     role = _make_role()
     orderbook = [
@@ -157,3 +174,123 @@ def test_clear_no_trade_with_real_solver_sets_zero_price():
     assert meta[0]["supply_volume"] == 0
     assert meta[0]["demand_volume"] == 0
     assert flows == []
+
+
+def test_clear_multi_location_sets_prices_and_meta_per_location():
+    role = _make_role(locations=("A", "B"))
+    orderbook = [
+        # market A
+        {"bid_id": "A_s1", "volume": 5, "price": 10, "node": "A"},
+        {"bid_id": "A_s2", "volume": 5, "price": 13, "node": "A"},
+        {"bid_id": "A_d1", "volume": -4, "price": 20, "node": "A"},
+        # market B
+        {"bid_id": "B_s1", "volume": 4, "price": 8, "node": "B"},
+        {"bid_id": "B_s2", "volume": 3, "price": 12, "node": "B"},
+        {"bid_id": "B_d1", "volume": -3, "price": 18, "node": "B"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+
+    accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
+
+    accepted_by_id = {o["bid_id"]: o for o in accepted_orders}
+    rejected_ids = {o["bid_id"] for o in rejected_orders}
+    meta_by_node = {m["node"]: m for m in meta}
+
+    assert {"A_s1", "A_d1", "B_s1", "B_d1"} <= set(accepted_by_id)
+    assert {"A_s2", "B_s2"} <= rejected_ids
+    assert accepted_by_id["A_s1"]["accepted_price"] == 10
+    assert accepted_by_id["A_d1"]["accepted_price"] == 10
+    assert accepted_by_id["B_s1"]["accepted_price"] == 8
+    assert accepted_by_id["B_d1"]["accepted_price"] == 8
+    assert accepted_by_id["A_s1"]["accepted_volume"] > 0
+    assert accepted_by_id["B_s1"]["accepted_volume"] > 0
+    assert accepted_by_id["A_d1"]["accepted_volume"] < 0
+    assert accepted_by_id["B_d1"]["accepted_volume"] < 0
+    assert meta_by_node["A"]["supply_volume"] == 4
+    assert meta_by_node["A"]["demand_volume"] == 4
+    assert meta_by_node["B"]["supply_volume"] == 3
+    assert meta_by_node["B"]["demand_volume"] == 3
+
+
+def test_clear_cross_border_exclusive_bid_links_markets():
+    role = _make_role(locations=("A", "B"))
+    orderbook = [
+        # market A
+        {"bid_id": "A_d1", "volume": -10, "price": 30, "node": "A"},
+        {"bid_id": "A_local", "volume": 10, "price": 10, "node": "A"},
+        {
+            "bid_id": "A_d2",
+            "volume": -5,
+            "price": 20,
+            "node": "A",
+        },  # this would be accepted if A_x would not be exclusive
+        {"bid_id": "A_x", "volume": 5, "price": 12, "node": "A", "exclusive_id": "X"},
+        # market B
+        {"bid_id": "B_d1", "volume": -5, "price": 40, "node": "B"},
+        {"bid_id": "B_x", "volume": 5, "price": 12, "node": "B", "exclusive_id": "X"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+
+    accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
+    by_id = {o["bid_id"]: o for o in accepted_orders + rejected_orders}
+    meta_by_node = {m["node"]: m for m in meta}
+
+    assert by_id["A_d1"]["accepted_volume"] == -10
+    assert by_id["A_local"]["accepted_volume"] == 10
+
+    assert by_id["A_x"]["accepted_volume"] == 0
+    assert by_id["B_x"]["accepted_volume"] == 5
+
+    assert by_id["A_d2"]["accepted_volume"] == 0
+    assert by_id["B_d1"]["accepted_volume"] < 0
+    assert (by_id["A_x"]["accepted_volume"] / 5) + (
+        by_id["B_x"]["accepted_volume"] / 5
+    ) <= 1.0 + 1e-9
+    assert meta_by_node["A"]["price"] == 10
+    assert meta_by_node["B"]["price"] == 12
+
+    role = _make_role(locations=("A", "B"))
+    orderbook = [
+        {"bid_id": "D1", "volume": -10, "price": 10, "node": "A", "exclusive_id": "X"},
+        {"bid_id": "S1", "volume": 10, "price": 5, "node": "A"},
+        {"bid_id": "D2", "volume": -10, "price": 8, "node": "B", "exclusive_id": "X"},
+        {"bid_id": "S2", "volume": 10, "price": 4, "node": "B"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+    accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
+    by_id = {o["bid_id"]: o for o in accepted_orders + rejected_orders}
+
+    assert by_id["D1"]["accepted_volume"] == -10
+    assert by_id["S1"]["accepted_volume"] == 10
+    assert by_id["D2"]["accepted_volume"] == 0
+    assert by_id["S2"]["accepted_volume"] == 0
+
+    role = _make_role(locations=("A", "B"))
+    orderbook = [
+        {"bid_id": "D1", "volume": -10, "price": 10, "node": "A", "exclusive_id": "X"},
+        {"bid_id": "S1", "volume": 10, "price": 7, "node": "A"},
+        {"bid_id": "D2", "volume": -10, "price": 8, "node": "B", "exclusive_id": "X"},
+        {"bid_id": "S2", "volume": 10, "price": 4, "node": "B"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+    accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
+    by_id = {o["bid_id"]: o for o in accepted_orders + rejected_orders}
+
+    assert by_id["D1"]["accepted_volume"] == 0
+    assert by_id["S1"]["accepted_volume"] == 0
+    assert by_id["D2"]["accepted_volume"] == -10
+    assert by_id["S2"]["accepted_volume"] == 10
+
+    role = _make_role(locations=("A"))
+    orderbook = [
+        {"bid_id": "D1", "volume": -10, "price": 10, "node": "A", "exclusive_id": "X"},
+        {"bid_id": "D2", "volume": -10, "price": 12, "node": "A", "exclusive_id": "X"},
+        {"bid_id": "S1", "volume": 10, "price": 5, "node": "A"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+    accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
+    by_id = {o["bid_id"]: o for o in accepted_orders + rejected_orders}
+
+    assert by_id["D1"]["accepted_volume"] == 0
+    assert by_id["D2"]["accepted_volume"] == -10
+    assert by_id["S1"]["accepted_volume"] == 10
