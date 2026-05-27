@@ -41,7 +41,9 @@ calculate_meta = module.calculate_meta
 
 
 def _get_available_solver():
-    for solver_name in ("gurobi", "highs", "appsi_highs", "glpk", "cbc"):
+    # Prefer open/local LP solvers first. Gurobi can appear "available" but fail at
+    # runtime due to missing/blocked license token access in sandboxed runs.
+    for solver_name in ("highs", "appsi_highs", "glpk", "cbc", "gurobi"):
         try:
             if pyo.SolverFactory(solver_name).available(False):
                 return solver_name
@@ -211,7 +213,7 @@ def test_clear_multi_location_sets_prices_and_meta_per_location():
     assert meta_by_node["B"]["demand_volume"] == 3
 
 
-def test_clear_cross_border_exclusive_bid_links_markets():
+def test_exclusive_bids_priority_A_d1_and_B_x():
     role = _make_role(locations=("A", "B"))
     orderbook = [
         # market A
@@ -236,10 +238,8 @@ def test_clear_cross_border_exclusive_bid_links_markets():
 
     assert by_id["A_d1"]["accepted_volume"] == -10
     assert by_id["A_local"]["accepted_volume"] == 10
-
     assert by_id["A_x"]["accepted_volume"] == 0
     assert by_id["B_x"]["accepted_volume"] == 5
-
     assert by_id["A_d2"]["accepted_volume"] == 0
     assert by_id["B_d1"]["accepted_volume"] < 0
     assert (by_id["A_x"]["accepted_volume"] / 5) + (
@@ -248,6 +248,8 @@ def test_clear_cross_border_exclusive_bid_links_markets():
     assert meta_by_node["A"]["price"] == 10
     assert meta_by_node["B"]["price"] == 12
 
+
+def test_exclusive_bid_link_accepted_A():
     role = _make_role(locations=("A", "B"))
     orderbook = [
         {"bid_id": "D1", "volume": -10, "price": 10, "node": "A", "exclusive_id": "X"},
@@ -264,6 +266,8 @@ def test_clear_cross_border_exclusive_bid_links_markets():
     assert by_id["D2"]["accepted_volume"] == 0
     assert by_id["S2"]["accepted_volume"] == 0
 
+
+def test_exclusive_bid_link_accepted_B():
     role = _make_role(locations=("A", "B"))
     orderbook = [
         {"bid_id": "D1", "volume": -10, "price": 10, "node": "A", "exclusive_id": "X"},
@@ -280,6 +284,8 @@ def test_clear_cross_border_exclusive_bid_links_markets():
     assert by_id["D2"]["accepted_volume"] == -10
     assert by_id["S2"]["accepted_volume"] == 10
 
+
+def test_exclusive_bid_same_market_A():
     role = _make_role(locations=("A"))
     orderbook = [
         {"bid_id": "D1", "volume": -10, "price": 10, "node": "A", "exclusive_id": "X"},
