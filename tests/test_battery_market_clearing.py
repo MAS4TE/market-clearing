@@ -339,6 +339,7 @@ def test_exclusive_bid_same_market_A():
             "exclusive_id": "X",
         },
         {"bid_id": "S1", "volume": 10, "price": 5, "location": "A"},
+        {"bid_id": "S2", "volume": 10, "price": 4, "location": "A"},
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
     accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
@@ -346,4 +347,33 @@ def test_exclusive_bid_same_market_A():
 
     assert by_id["D1"]["accepted_volume"] == 0
     assert by_id["D2"]["accepted_volume"] == -10
+    assert by_id["S1"]["accepted_volume"] == 0
+    assert by_id["S2"]["accepted_volume"] == 10
+
+
+def test_clear_all_with_exclusive_missing():
+    role = _make_role()
+    orderbook = [
+        {
+            "bid_id": "D1",
+            "volume": -10,
+            "price": 10,
+            "location": "A",
+        },
+        {
+            "bid_id": "D2",
+            "volume": -10,
+            "price": 12,
+            "location": "A",
+        },
+        {"bid_id": "S1", "volume": 10, "price": 5, "location": "A"},
+        {"bid_id": "S2", "volume": 10, "price": 4, "location": "A"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+    accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
+    by_id = {o["bid_id"]: o for o in accepted_orders + rejected_orders}
+
+    assert by_id["D1"]["accepted_volume"] == -10
+    assert by_id["D2"]["accepted_volume"] == -10
     assert by_id["S1"]["accepted_volume"] == 10
+    assert by_id["S2"]["accepted_volume"] == 10
