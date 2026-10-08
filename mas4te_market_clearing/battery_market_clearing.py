@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import json
 import logging
 from collections import defaultdict
 from datetime import timedelta
@@ -12,6 +13,13 @@ from assume.common.market_objects import MarketConfig, Order, Orderbook
 from assume.markets.base_market import MarketRole
 
 logger = logging.getLogger(__name__)
+
+# order field carrying the bidder's blockchain address (required on every order)
+BLOCKCHAIN_ADDRESS_FIELD = "blockchain_address"
+# order field the clearing fills with the matched counterparties (JSON string)
+MATCHES_FIELD = "matches"
+# volumes below this are treated as zero when splitting matches
+VOLUME_EPS = 1e-9
 
 
 def validate_unique_bid_ids(orderbook: Orderbook) -> None:
@@ -34,6 +42,63 @@ def validate_unique_bid_ids(orderbook: Orderbook) -> None:
             f"Same bid_id used more than once: {names}. "
             "Give every order its own bid_id, otherwise several orders collapse into one variable."
         )
+
+
+def match_counterparties(
+    accepted_supply_orders: list[Order],
+    accepted_demand_orders: list[Order],
+    clear_price: float,
+) -> None:
+    """Assign each accepted order the counterparties it trades with.
+
+    The clearing itself only balances total supply and demand, so the pairing
+    is derived afterwards: the cheapest supply is matched with the
+    highest-paying demand until the accepted volumes are used up (ties are
+    broken by ``bid_id``). Every match carries the counterparty's
+    ``bid_id``, blockchain address, the matched volume and the uniform price.
+
+    The matches are stored as JSON string in ``order["matches"]`` because
+    ASSUME splits orders with dict values and cannot write lists to the
+    database.
+    """
+    supply_queue = sorted(
+        accepted_supply_orders, key=lambda o: (o["price"], str(o["bid_id"]))
+    )
+    demand_queue = sorted(
+        accepted_demand_orders, key=lambda o: (-o["price"], str(o["bid_id"]))
+    )
+    remaining = {
+        id(order): abs(order["accepted_volume"])
+        for order in supply_queue + demand_queue
+    }
+    matches = {id(order): [] for order in supply_queue + demand_queue}
+
+    s_idx = d_idx = 0
+    while s_idx < len(supply_queue) and d_idx < len(demand_queue):
+        supply = supply_queue[s_idx]
+        demand = demand_queue[d_idx]
+        volume = min(remaining[id(supply)], remaining[id(demand)])
+
+        if volume > VOLUME_EPS:
+            for order, counterpart in ((supply, demand), (demand, supply)):
+                matches[id(order)].append(
+                    {
+                        "bid_id": counterpart["bid_id"],
+                        BLOCKCHAIN_ADDRESS_FIELD: counterpart[BLOCKCHAIN_ADDRESS_FIELD],
+                        "volume": volume,
+                        "price": clear_price,
+                    }
+                )
+            remaining[id(supply)] -= volume
+            remaining[id(demand)] -= volume
+
+        if remaining[id(supply)] <= VOLUME_EPS:
+            s_idx += 1
+        if remaining[id(demand)] <= VOLUME_EPS:
+            d_idx += 1
+
+    for order in supply_queue + demand_queue:
+        order[MATCHES_FIELD] = json.dumps(matches[id(order)], default=str)
 
 
 def calculate_meta(
@@ -91,6 +156,10 @@ class BatteryClearing(MarketRole):
       same value in this field are mutually exclusive.
     """
 
+    # ASSUME checks that these are listed in ``MarketConfig.additional_fields``
+    # and present on every order
+    required_fields = ["c_rate", BLOCKCHAIN_ADDRESS_FIELD]
+
     def __init__(self, marketconfig: MarketConfig):
         super().__init__(marketconfig)
 
@@ -106,6 +175,11 @@ class BatteryClearing(MarketRole):
         for order in orderbook:
             if order["c_rate"] not in allowed_c_rates:
                 raise ValueError(f"{order['c_rate']} is not in {allowed_c_rates}")
+            address = order.get(BLOCKCHAIN_ADDRESS_FIELD)
+            if not isinstance(address, str) or not address.strip():
+                raise ValueError(
+                    f"Order {order.get('bid_id')!r} has no valid {BLOCKCHAIN_ADDRESS_FIELD}: {address!r}"
+                )
             if locations:
                 location = _order_location(order)
                 if location not in locations:
@@ -422,9 +496,12 @@ class BatteryClearing(MarketRole):
             for order in loc_accepted:
                 order["accepted_price"] = clear_price
 
+            match_counterparties(loc_accepted_supply, loc_accepted_demand, clear_price)
+
             for order in loc_rejected:
                 order["accepted_volume"] = 0
                 order["accepted_price"] = 0.0
+                order[MATCHES_FIELD] = json.dumps([])
 
             label = f"[{loc}] " if loc is not None else ""
             print(f"{label}Clearing price: {clear_price * 100} ct./kWh")

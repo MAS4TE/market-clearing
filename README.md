@@ -48,6 +48,27 @@ pip install -r requirements.txt
   (e.g. supply/demand volume, uniform price, product interval, `location`).
 - `flows`: Currently an empty list.
 
+## Blockchain Addresses and Matches
+
+Every order must carry the bidder's blockchain address in the field
+`blockchain_address` (non-empty string). `BatteryClearing.required_fields`
+contains it, so ASSUME refuses a market config that does not list it in
+`additional_fields`, and `validate_orderbook` rejects orders without one.
+
+The optimization only balances total supply and demand per location, so who
+trades with whom is derived afterwards: per location, the cheapest accepted
+supply is matched with the highest-paying accepted demand until the accepted
+volumes are used up (ties broken by `bid_id`). Each order then gets a field
+`matches`, a **JSON string** (ASSUME splits orders with dict values and cannot
+store lists in the database) holding a list of counterparties:
+
+```json
+[{"bid_id": "S_01_1", "blockchain_address": "0x...", "volume": 2.0, "price": 0.12}]
+```
+
+`volume` is the matched (positive) volume, `price` the uniform clearing price
+of the location. Rejected orders get `"[]"`.
+
 ## Multi-Market / Exclusive Bids
 
 `BatteryClearing` can jointly clear several markets (e.g. one at location `A`
@@ -84,6 +105,7 @@ In addition to the standard ASSUME `Order` fields:
 
 - `location`: location identifier (e.g. `"A"` or `"B"`). (`node` is accepted as legacy alias.)
 - `c_rate`: as before.
+- `blockchain_address`: the bidder's blockchain address.
 - `exclusive_id` (or whatever `exclusive_link_field` points at): identifier
   shared by all orders in the same exclusive group. Set to `None` (or omit) if
   the order is not coupled to any other.

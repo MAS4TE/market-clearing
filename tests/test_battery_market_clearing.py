@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 from datetime import datetime, timedelta
 from types import ModuleType, SimpleNamespace
@@ -126,14 +127,35 @@ def test_validate_orderbook_rejects_disallowed_c_rate():
 
 def test_validate_orderbook_accepts_allowed_c_rates():
     role = _make_role(allowed_c_rates=(0.5, 1.0))
-    role.validate_orderbook([{"c_rate": 0.5}, {"c_rate": 1.0}], agent_addr="agent")
+    role.validate_orderbook(
+        [
+            {"c_rate": 0.5, "blockchain_address": "0xA"},
+            {"c_rate": 1.0, "blockchain_address": "0xB"},
+        ],
+        agent_addr="agent",
+    )
+
+
+@pytest.mark.parametrize("address", [None, "", "   ", 123])
+def test_validate_orderbook_rejects_missing_blockchain_address(address):
+    role = _make_role()
+    order = {"bid_id": "s1", "c_rate": 1.0}
+    if address is not None:
+        order["blockchain_address"] = address
+
+    with pytest.raises(ValueError, match="blockchain_address"):
+        role.validate_orderbook([order], agent_addr="agent")
+
+
+def test_blockchain_address_is_required_field():
+    assert "blockchain_address" in BatteryClearing.required_fields
 
 
 def test_validate_orderbook_rejects_node_outside_configured_locations():
     role = _make_role(locations=("A", "B"))
     with pytest.raises(ValueError, match="allowed locations"):
         role.validate_orderbook(
-            [{"c_rate": 1.0, "location": "C"}],
+            [{"c_rate": 1.0, "location": "C", "blockchain_address": "0xA"}],
             agent_addr="agent",
         )
 
@@ -141,9 +163,9 @@ def test_validate_orderbook_rejects_node_outside_configured_locations():
 def test_clear_assigns_uniform_price_and_rejects_unawarded_orders_with_real_solver():
     role = _make_role()
     orderbook = [
-        {"bid_id": "s1", "volume": 5, "price": 12},
-        {"bid_id": "s2", "volume": 4, "price": 15},
-        {"bid_id": "d1", "volume": -3, "price": 20},
+        {"bid_id": "s1", "blockchain_address": "0xs1", "volume": 5, "price": 12},
+        {"bid_id": "s2", "blockchain_address": "0xs2", "volume": 4, "price": 15},
+        {"bid_id": "d1", "blockchain_address": "0xd1", "volume": -3, "price": 20},
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
 
@@ -161,8 +183,8 @@ def test_clear_assigns_uniform_price_and_rejects_unawarded_orders_with_real_solv
 def test_clear_no_trade_with_real_solver_sets_zero_price():
     role = _make_role()
     orderbook = [
-        {"bid_id": "s1", "volume": 5, "price": 12},
-        {"bid_id": "d1", "volume": -5, "price": 10},
+        {"bid_id": "s1", "blockchain_address": "0xs1", "volume": 5, "price": 12},
+        {"bid_id": "d1", "blockchain_address": "0xd1", "volume": -5, "price": 10},
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
 
@@ -181,13 +203,49 @@ def test_clear_multi_location_sets_prices_and_meta_per_location():
     role = _make_role(locations=("A", "B"))
     orderbook = [
         # market A
-        {"bid_id": "A_s1", "volume": 5, "price": 10, "location": "A"},
-        {"bid_id": "A_s2", "volume": 5, "price": 13, "location": "A"},
-        {"bid_id": "A_d1", "volume": -4, "price": 20, "location": "A"},
+        {
+            "bid_id": "A_s1",
+            "blockchain_address": "0xA_s1",
+            "volume": 5,
+            "price": 10,
+            "location": "A",
+        },
+        {
+            "bid_id": "A_s2",
+            "blockchain_address": "0xA_s2",
+            "volume": 5,
+            "price": 13,
+            "location": "A",
+        },
+        {
+            "bid_id": "A_d1",
+            "blockchain_address": "0xA_d1",
+            "volume": -4,
+            "price": 20,
+            "location": "A",
+        },
         # market B
-        {"bid_id": "B_s1", "volume": 4, "price": 8, "location": "B"},
-        {"bid_id": "B_s2", "volume": 3, "price": 12, "location": "B"},
-        {"bid_id": "B_d1", "volume": -3, "price": 18, "location": "B"},
+        {
+            "bid_id": "B_s1",
+            "blockchain_address": "0xB_s1",
+            "volume": 4,
+            "price": 8,
+            "location": "B",
+        },
+        {
+            "bid_id": "B_s2",
+            "blockchain_address": "0xB_s2",
+            "volume": 3,
+            "price": 12,
+            "location": "B",
+        },
+        {
+            "bid_id": "B_d1",
+            "blockchain_address": "0xB_d1",
+            "volume": -3,
+            "price": 18,
+            "location": "B",
+        },
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
 
@@ -217,25 +275,46 @@ def test_exclusive_bids_priority_A_d1_and_B_x():
     role = _make_role(locations=("A", "B"))
     orderbook = [
         # market A
-        {"bid_id": "A_d1", "volume": -10, "price": 30, "location": "A"},
-        {"bid_id": "A_local", "volume": 10, "price": 10, "location": "A"},
+        {
+            "bid_id": "A_d1",
+            "blockchain_address": "0xA_d1",
+            "volume": -10,
+            "price": 30,
+            "location": "A",
+        },
+        {
+            "bid_id": "A_local",
+            "blockchain_address": "0xA_local",
+            "volume": 10,
+            "price": 10,
+            "location": "A",
+        },
         {
             "bid_id": "A_d2",
+            "blockchain_address": "0xA_d2",
             "volume": -5,
             "price": 20,
             "location": "A",
         },  # this would be accepted if A_x would not be exclusive
         {
             "bid_id": "A_x",
+            "blockchain_address": "0xA_x",
             "volume": 5,
             "price": 12,
             "location": "A",
             "exclusive_id": "X",
         },
         # market B
-        {"bid_id": "B_d1", "volume": -5, "price": 40, "location": "B"},
+        {
+            "bid_id": "B_d1",
+            "blockchain_address": "0xB_d1",
+            "volume": -5,
+            "price": 40,
+            "location": "B",
+        },
         {
             "bid_id": "B_x",
+            "blockchain_address": "0xB_x",
             "volume": 5,
             "price": 12,
             "location": "B",
@@ -266,20 +345,34 @@ def test_exclusive_bid_link_accepted_A():
     orderbook = [
         {
             "bid_id": "D1",
+            "blockchain_address": "0xD1",
             "volume": -10,
             "price": 10,
             "location": "A",
             "exclusive_id": "X",
         },
-        {"bid_id": "S1", "volume": 10, "price": 5, "location": "A"},
+        {
+            "bid_id": "S1",
+            "blockchain_address": "0xS1",
+            "volume": 10,
+            "price": 5,
+            "location": "A",
+        },
         {
             "bid_id": "D2",
+            "blockchain_address": "0xD2",
             "volume": -10,
             "price": 8,
             "location": "B",
             "exclusive_id": "X",
         },
-        {"bid_id": "S2", "volume": 10, "price": 4, "location": "B"},
+        {
+            "bid_id": "S2",
+            "blockchain_address": "0xS2",
+            "volume": 10,
+            "price": 4,
+            "location": "B",
+        },
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
     accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
@@ -296,20 +389,34 @@ def test_exclusive_bid_link_accepted_B():
     orderbook = [
         {
             "bid_id": "D1",
+            "blockchain_address": "0xD1",
             "volume": -10,
             "price": 10,
             "location": "A",
             "exclusive_id": "X",
         },
-        {"bid_id": "S1", "volume": 10, "price": 7, "location": "A"},
+        {
+            "bid_id": "S1",
+            "blockchain_address": "0xS1",
+            "volume": 10,
+            "price": 7,
+            "location": "A",
+        },
         {
             "bid_id": "D2",
+            "blockchain_address": "0xD2",
             "volume": -10,
             "price": 8,
             "location": "B",
             "exclusive_id": "X",
         },
-        {"bid_id": "S2", "volume": 10, "price": 4, "location": "B"},
+        {
+            "bid_id": "S2",
+            "blockchain_address": "0xS2",
+            "volume": 10,
+            "price": 4,
+            "location": "B",
+        },
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
     accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
@@ -326,6 +433,7 @@ def test_exclusive_bid_same_market_A():
     orderbook = [
         {
             "bid_id": "D1",
+            "blockchain_address": "0xD1",
             "volume": -10,
             "price": 10,
             "location": "A",
@@ -333,13 +441,26 @@ def test_exclusive_bid_same_market_A():
         },
         {
             "bid_id": "D2",
+            "blockchain_address": "0xD2",
             "volume": -10,
             "price": 12,
             "location": "A",
             "exclusive_id": "X",
         },
-        {"bid_id": "S1", "volume": 10, "price": 5, "location": "A"},
-        {"bid_id": "S2", "volume": 10, "price": 4, "location": "A"},
+        {
+            "bid_id": "S1",
+            "blockchain_address": "0xS1",
+            "volume": 10,
+            "price": 5,
+            "location": "A",
+        },
+        {
+            "bid_id": "S2",
+            "blockchain_address": "0xS2",
+            "volume": 10,
+            "price": 4,
+            "location": "A",
+        },
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
     accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
@@ -356,18 +477,32 @@ def test_clear_all_with_exclusive_missing():
     orderbook = [
         {
             "bid_id": "D1",
+            "blockchain_address": "0xD1",
             "volume": -10,
             "price": 10,
             "location": "A",
         },
         {
             "bid_id": "D2",
+            "blockchain_address": "0xD2",
             "volume": -10,
             "price": 12,
             "location": "A",
         },
-        {"bid_id": "S1", "volume": 10, "price": 5, "location": "A"},
-        {"bid_id": "S2", "volume": 10, "price": 4, "location": "A"},
+        {
+            "bid_id": "S1",
+            "blockchain_address": "0xS1",
+            "volume": 10,
+            "price": 5,
+            "location": "A",
+        },
+        {
+            "bid_id": "S2",
+            "blockchain_address": "0xS2",
+            "volume": 10,
+            "price": 4,
+            "location": "A",
+        },
     ]
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
     accepted_orders, rejected_orders, meta, _ = role.clear(orderbook, [product])
@@ -377,3 +512,107 @@ def test_clear_all_with_exclusive_missing():
     assert by_id["D2"]["accepted_volume"] == -10
     assert by_id["S1"]["accepted_volume"] == 10
     assert by_id["S2"]["accepted_volume"] == 10
+
+
+def _matches(order):
+    return [
+        (m["bid_id"], m["blockchain_address"], m["volume"])
+        for m in json.loads(order["matches"])
+    ]
+
+
+def test_clear_matches_cheapest_supply_with_highest_demand():
+    role = _make_role()
+    orderbook = [
+        {"bid_id": "s1", "volume": 5, "price": 10, "blockchain_address": "0xS1"},
+        {"bid_id": "s2", "volume": 5, "price": 12, "blockchain_address": "0xS2"},
+        {"bid_id": "s3", "volume": 5, "price": 30, "blockchain_address": "0xS3"},
+        {"bid_id": "d1", "volume": -4, "price": 20, "blockchain_address": "0xD1"},
+        {"bid_id": "d2", "volume": -3, "price": 25, "blockchain_address": "0xD2"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+
+    accepted_orders, rejected_orders, _, _ = role.clear(orderbook, [product])
+    by_id = {o["bid_id"]: o for o in accepted_orders + rejected_orders}
+
+    # d2 pays most and gets the cheapest supply first
+    assert _matches(by_id["s1"]) == [("d2", "0xD2", 3), ("d1", "0xD1", 2)]
+    assert _matches(by_id["s2"]) == [("d1", "0xD1", 2)]
+    assert _matches(by_id["d2"]) == [("s1", "0xS1", 3)]
+    assert _matches(by_id["d1"]) == [("s1", "0xS1", 2), ("s2", "0xS2", 2)]
+    assert _matches(by_id["s3"]) == []
+    assert all(
+        m["price"] == 12 for o in accepted_orders for m in json.loads(o["matches"])
+    )
+
+
+def test_clear_matched_volumes_add_up_to_accepted_volumes():
+    role = _make_role()
+    orderbook = [
+        {"bid_id": "s1", "volume": 2.5, "price": 1, "blockchain_address": "0xS1"},
+        {"bid_id": "s2", "volume": 1.5, "price": 2, "blockchain_address": "0xS2"},
+        {"bid_id": "d1", "volume": -1, "price": 5, "blockchain_address": "0xD1"},
+        {"bid_id": "d2", "volume": -2, "price": 4, "blockchain_address": "0xD2"},
+        {"bid_id": "d3", "volume": -1, "price": 3, "blockchain_address": "0xD3"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+
+    accepted_orders, _, _, _ = role.clear(orderbook, [product])
+
+    for order in accepted_orders:
+        matched = sum(m["volume"] for m in json.loads(order["matches"]))
+        assert matched == pytest.approx(abs(order["accepted_volume"]))
+
+
+def test_clear_matches_only_within_location():
+    role = _make_role(locations=("A", "B"))
+    orderbook = [
+        {
+            "bid_id": "A_s",
+            "volume": 5,
+            "price": 1,
+            "location": "A",
+            "blockchain_address": "0xAS",
+        },
+        {
+            "bid_id": "A_d",
+            "volume": -5,
+            "price": 9,
+            "location": "A",
+            "blockchain_address": "0xAD",
+        },
+        {
+            "bid_id": "B_s",
+            "volume": 5,
+            "price": 2,
+            "location": "B",
+            "blockchain_address": "0xBS",
+        },
+        {
+            "bid_id": "B_d",
+            "volume": -5,
+            "price": 9,
+            "location": "B",
+            "blockchain_address": "0xBD",
+        },
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+
+    accepted_orders, _, _, _ = role.clear(orderbook, [product])
+    by_id = {o["bid_id"]: o for o in accepted_orders}
+
+    assert _matches(by_id["A_s"]) == [("A_d", "0xAD", 5)]
+    assert _matches(by_id["B_d"]) == [("B_s", "0xBS", 5)]
+
+
+def test_clear_no_trade_sets_empty_matches():
+    role = _make_role()
+    orderbook = [
+        {"bid_id": "s1", "volume": 5, "price": 12, "blockchain_address": "0xS1"},
+        {"bid_id": "d1", "volume": -5, "price": 10, "blockchain_address": "0xD1"},
+    ]
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 1, 11, 0), None)
+
+    _, rejected_orders, _, _ = role.clear(orderbook, [product])
+
+    assert all(json.loads(o["matches"]) == [] for o in rejected_orders)
