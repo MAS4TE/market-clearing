@@ -14,8 +14,12 @@ from operator import itemgetter
 import pyomo.environ as pyo
 from assume.common.market_objects import MarketConfig, Order, Orderbook
 from assume.markets.base_market import MarketRole
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+
+load_dotenv()
 
 # order field carrying the bidder's blockchain address (required on every order)
 BLOCKCHAIN_ADDRESS_FIELD = "blockchain_address"
