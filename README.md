@@ -74,8 +74,8 @@ of the location. Rejected orders get `"[]"`.
 If the environment variable `BRP_MARKET_RESULTS_URL` is set, `clear()` sends the delivery
 period of the product (`start_time`, `end_time`) and the accepted orders (with `unit_id`,
 `blockchain_address`, delivery period, accepted volume and price and the `matches`) as JSON
-to that URL, with the password from `MARKET_RESULTS_PASSWORD` in the header
-`X-Market-Results-Password` (the BRP's `MARKET_RESULTS_PASSWORD`, not the password of the
+to that URL, using HTTP Basic Auth with the username `assume` and the password from
+`MARKET_RESULTS_PASSWORD` (the BRP's `MARKET_RESULTS_PASSWORD`, not the password of the
 agents). The delivery period is
 sent also if no order was accepted, so the BRP can replace an earlier result for it. If
 `BRP_MARKET_RESULTS_URL` is not set, nothing is sent. A BRP that cannot be reached is logged

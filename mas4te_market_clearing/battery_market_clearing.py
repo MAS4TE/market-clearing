@@ -144,7 +144,7 @@ def send_market_results(
         response = requests.post(
             BRP_MARKET_RESULTS_URL,
             json=payload,
-            headers={"X-Market-Results-Password": MARKET_RESULTS_PASSWORD},
+            auth=("assume", MARKET_RESULTS_PASSWORD),
             timeout=30,
         )
         response.raise_for_status()

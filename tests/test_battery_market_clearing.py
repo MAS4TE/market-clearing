@@ -666,8 +666,8 @@ def test_clear_does_not_send_market_results_without_brp_url(monkeypatch):
 def test_clear_sends_accepted_orders_to_brp(monkeypatch):
     sent = []
 
-    def fake_post(url, json, headers, timeout):
-        sent.append({"url": url, "json": json, "headers": headers})
+    def fake_post(url, json, auth, timeout):
+        sent.append({"url": url, "json": json, "auth": auth})
         return SimpleNamespace(status_code=200, raise_for_status=lambda: None)
 
     monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", "http://brp/market_results")
@@ -681,7 +681,7 @@ def test_clear_sends_accepted_orders_to_brp(monkeypatch):
 
     assert len(sent) == 1
     assert sent[0]["url"] == "http://brp/market_results"
-    assert sent[0]["headers"] == {"X-Market-Results-Password": "pw"}
+    assert sent[0]["auth"] == ("assume", "pw")
     payload = sent[0]["json"]
     assert payload["market_id"] == "BatteryMarket"
     assert payload["start_time"] == "2026-01-01T10:00:00"
@@ -698,7 +698,7 @@ def test_clear_sends_accepted_orders_to_brp(monkeypatch):
 def test_clear_sends_delivery_period_to_brp_without_trades(monkeypatch):
     sent = []
 
-    def fake_post(url, json, headers, timeout):
+    def fake_post(url, json, auth, timeout):
         sent.append(json)
         return SimpleNamespace(status_code=200, raise_for_status=lambda: None)
 
