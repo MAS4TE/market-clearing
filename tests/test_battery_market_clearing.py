@@ -681,7 +681,7 @@ def test_clear_sends_accepted_orders_to_brp(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", "http://brp/market_results")
-    monkeypatch.setattr(module, "BRP_MARKET_RESULTS_PASSWORD", "pw")
+    monkeypatch.setattr(module, "MARKET_RESULTS_PASSWORD", "pw")
     monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
     role = _make_role()
     role.marketconfig.market_id = "BatteryMarket"

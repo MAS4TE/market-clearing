@@ -26,7 +26,7 @@ VOLUME_EPS = 1e-9
 # BRP endpoint for the market results, nothing is sent if it is not set
 BRP_MARKET_RESULTS_URL = os.getenv("BRP_MARKET_RESULTS_URL")
 # MARKET_RESULTS_PASSWORD of the BRP (not the password of the agents)
-BRP_MARKET_RESULTS_PASSWORD = os.getenv("BRP_MARKET_RESULTS_PASSWORD")
+MARKET_RESULTS_PASSWORD = os.getenv("MARKET_RESULTS_PASSWORD")
 
 
 def validate_unique_bid_ids(orderbook: Orderbook) -> None:
@@ -137,7 +137,7 @@ def send_market_results(
     }
 
     credentials = base64.b64encode(
-        f"assume:{BRP_MARKET_RESULTS_PASSWORD}".encode()
+        f"assume:{MARKET_RESULTS_PASSWORD}".encode()
     ).decode()
     request = urllib.request.Request(
         BRP_MARKET_RESULTS_URL,
