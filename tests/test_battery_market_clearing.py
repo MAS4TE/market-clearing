@@ -1,4 +1,3 @@
-import base64
 import importlib
 import json
 import sys
@@ -655,7 +654,7 @@ def _brp_orderbook():
 def test_clear_does_not_send_market_results_without_brp_url(monkeypatch):
     monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", None)
     monkeypatch.setattr(
-        module.urllib.request, "urlopen", lambda *a, **k: pytest.fail("must not send")
+        module.requests, "post", lambda *a, **k: pytest.fail("must not send")
     )
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 8, 10, 0), None)
 
@@ -667,22 +666,13 @@ def test_clear_does_not_send_market_results_without_brp_url(monkeypatch):
 def test_clear_sends_accepted_orders_to_brp(monkeypatch):
     sent = []
 
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    def fake_urlopen(request, timeout):
-        sent.append(request)
-        return FakeResponse()
+    def fake_post(url, json, headers, timeout):
+        sent.append({"url": url, "json": json, "headers": headers})
+        return SimpleNamespace(status_code=200, raise_for_status=lambda: None)
 
     monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", "http://brp/market_results")
     monkeypatch.setattr(module, "MARKET_RESULTS_PASSWORD", "pw")
-    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.requests, "post", fake_post)
     role = _make_role()
     role.marketconfig.market_id = "BatteryMarket"
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 8, 10, 0), None)
@@ -690,12 +680,9 @@ def test_clear_sends_accepted_orders_to_brp(monkeypatch):
     role.clear(_brp_orderbook(), [product])
 
     assert len(sent) == 1
-    assert sent[0].full_url == "http://brp/market_results"
-    assert (
-        sent[0].get_header("Authorization")
-        == "Basic " + base64.b64encode(b"assume:pw").decode()
-    )
-    payload = json.loads(sent[0].data)
+    assert sent[0]["url"] == "http://brp/market_results"
+    assert sent[0]["headers"] == {"X-Market-Results-Password": "pw"}
+    payload = sent[0]["json"]
     assert payload["market_id"] == "BatteryMarket"
     assert payload["start_time"] == "2026-01-01T10:00:00"
     assert payload["end_time"] == "2026-01-08T10:00:00"
@@ -711,21 +698,12 @@ def test_clear_sends_accepted_orders_to_brp(monkeypatch):
 def test_clear_sends_delivery_period_to_brp_without_trades(monkeypatch):
     sent = []
 
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    def fake_urlopen(request, timeout):
-        sent.append(json.loads(request.data))
-        return FakeResponse()
+    def fake_post(url, json, headers, timeout):
+        sent.append(json)
+        return SimpleNamespace(status_code=200, raise_for_status=lambda: None)
 
     monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", "http://brp/market_results")
-    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.requests, "post", fake_post)
     role = _make_role()
     role.marketconfig.market_id = "BatteryMarket"
     product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 8, 10, 0), None)

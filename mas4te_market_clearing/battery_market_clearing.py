@@ -2,16 +2,15 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-import base64
 import json
 import logging
 import os
-import urllib.request
 from collections import defaultdict
 from datetime import timedelta
 from operator import itemgetter
 
 import pyomo.environ as pyo
+import requests
 from assume.common.market_objects import MarketConfig, Order, Orderbook
 from assume.markets.base_market import MarketRole
 from dotenv import load_dotenv
@@ -140,28 +139,21 @@ def send_market_results(
         ],
     }
 
-    credentials = base64.b64encode(
-        f"assume:{MARKET_RESULTS_PASSWORD}".encode()
-    ).decode()
-    request = urllib.request.Request(
-        BRP_MARKET_RESULTS_URL,
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Basic {credentials}",
-        },
-        method="POST",
-    )
-
     # a BRP that is down must not stop the simulation
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            logger.info(
-                "Sent %d accepted orders of market '%s' to the BRP: %s",
-                len(accepted_orders),
-                market_id,
-                response.status,
-            )
+        response = requests.post(
+            BRP_MARKET_RESULTS_URL,
+            json=payload,
+            headers={"X-Market-Results-Password": MARKET_RESULTS_PASSWORD},
+            timeout=30,
+        )
+        response.raise_for_status()
+        logger.info(
+            "Sent %d accepted orders of market '%s' to the BRP: %s",
+            len(accepted_orders),
+            market_id,
+            response.status_code,
+        )
     except Exception as e:
         logger.error(
             "Could not send market results of market '%s' to the BRP: %s",
