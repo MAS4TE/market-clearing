@@ -69,6 +69,21 @@ store lists in the database) holding a list of counterparties:
 `volume` is the matched (positive) volume, `price` the uniform clearing price
 of the location. Rejected orders get `"[]"`.
 
+## Reporting to the BRP
+
+If the environment variable `BRP_MARKET_RESULTS_URL` is set, `clear()` sends the delivery
+period of the product (`start_time`, `end_time`) and the accepted orders (with `unit_id`,
+`blockchain_address`, delivery period, accepted volume and price and the `matches`) as JSON
+to that URL, using HTTP Basic Auth with the password from `BRP_API_PASSWORD`. The delivery
+period is sent also if no order was accepted, so the BRP can replace an earlier result for
+it. If it is not set, nothing is sent. A BRP that cannot be reached is
+logged as an error and does not stop the clearing.
+
+```bash
+export BRP_MARKET_RESULTS_URL=https://mas4te.nowum.fh-aachen.de/brp-api/market_results
+export BRP_API_PASSWORD=...
+```
+
 ## Multi-Market / Exclusive Bids
 
 `BatteryClearing` can jointly clear several markets (e.g. one at location `A`

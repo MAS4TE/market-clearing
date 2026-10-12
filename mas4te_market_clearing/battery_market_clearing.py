@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import base64
 import json
 import logging
+import os
+import urllib.request
 from collections import defaultdict
 from datetime import timedelta
 from operator import itemgetter
@@ -20,6 +23,9 @@ BLOCKCHAIN_ADDRESS_FIELD = "blockchain_address"
 MATCHES_FIELD = "matches"
 # volumes below this are treated as zero when splitting matches
 VOLUME_EPS = 1e-9
+# BRP endpoint for the market results, nothing is sent if it is not set
+BRP_MARKET_RESULTS_URL = os.getenv("BRP_MARKET_RESULTS_URL")
+BRP_API_PASSWORD = os.getenv("BRP_API_PASSWORD")
 
 
 def validate_unique_bid_ids(orderbook: Orderbook) -> None:
@@ -99,6 +105,62 @@ def match_counterparties(
 
     for order in supply_queue + demand_queue:
         order[MATCHES_FIELD] = json.dumps(matches[id(order)], default=str)
+
+
+def send_market_results(
+    market_id: str, product: tuple, accepted_orders: list[Order]
+) -> None:
+    """Report the accepted orders to the BRP, so it knows who was awarded how
+    much and with whom.
+
+    The delivery period is always sent, also without accepted orders, so the BRP
+    can replace an earlier result for it (e.g. from a re-run of the simulation).
+    """
+    payload = {
+        "market_id": market_id,
+        "start_time": product[0].isoformat(),
+        "end_time": product[1].isoformat(),
+        "orders": [
+            {
+                "bid_id": order["bid_id"],
+                "unit_id": order["unit_id"],
+                BLOCKCHAIN_ADDRESS_FIELD: order[BLOCKCHAIN_ADDRESS_FIELD],
+                "start_time": order["start_time"].isoformat(),
+                "end_time": order["end_time"].isoformat(),
+                "accepted_volume": order["accepted_volume"],
+                "accepted_price": order["accepted_price"],
+                MATCHES_FIELD: json.loads(order[MATCHES_FIELD]),
+            }
+            for order in accepted_orders
+        ],
+    }
+
+    credentials = base64.b64encode(f"assume:{BRP_API_PASSWORD}".encode()).decode()
+    request = urllib.request.Request(
+        BRP_MARKET_RESULTS_URL,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {credentials}",
+        },
+        method="POST",
+    )
+
+    # a BRP that is down must not stop the simulation
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            logger.info(
+                "Sent %d accepted orders of market '%s' to the BRP: %s",
+                len(accepted_orders),
+                market_id,
+                response.status,
+            )
+    except Exception as e:
+        logger.error(
+            "Could not send market results of market '%s' to the BRP: %s",
+            market_id,
+            e,
+        )
 
 
 def calculate_meta(
@@ -520,6 +582,11 @@ class BatteryClearing(MarketRole):
             )
 
         flows = []
+
+        if BRP_MARKET_RESULTS_URL:
+            send_market_results(
+                self.marketconfig.market_id, market_products[0], accepted_orders
+            )
 
         return accepted_orders, rejected_orders, meta, flows
 

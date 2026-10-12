@@ -1,3 +1,4 @@
+import base64
 import importlib
 import json
 import sys
@@ -616,3 +617,131 @@ def test_clear_no_trade_sets_empty_matches():
     _, rejected_orders, _, _ = role.clear(orderbook, [product])
 
     assert all(json.loads(o["matches"]) == [] for o in rejected_orders)
+
+
+def _brp_orderbook():
+    start, end = datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 8, 10, 0)
+    return [
+        {
+            "bid_id": "S_01_1",
+            "unit_id": "S_01",
+            "volume": 5,
+            "price": 10,
+            "blockchain_address": "0xS1",
+            "start_time": start,
+            "end_time": end,
+        },
+        {
+            "bid_id": "B_01_1",
+            "unit_id": "B_01",
+            "volume": -3,
+            "price": 20,
+            "blockchain_address": "0xB1",
+            "start_time": start,
+            "end_time": end,
+        },
+        {
+            "bid_id": "B_02_1",
+            "unit_id": "B_02",
+            "volume": -3,
+            "price": 5,
+            "blockchain_address": "0xB2",
+            "start_time": start,
+            "end_time": end,
+        },
+    ]
+
+
+def test_clear_does_not_send_market_results_without_brp_url(monkeypatch):
+    monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", None)
+    monkeypatch.setattr(
+        module.urllib.request, "urlopen", lambda *a, **k: pytest.fail("must not send")
+    )
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 8, 10, 0), None)
+
+    accepted_orders, _, _, _ = _make_role().clear(_brp_orderbook(), [product])
+
+    assert len(accepted_orders) == 2
+
+
+def test_clear_sends_accepted_orders_to_brp(monkeypatch):
+    sent = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout):
+        sent.append(request)
+        return FakeResponse()
+
+    monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", "http://brp/market_results")
+    monkeypatch.setattr(module, "BRP_API_PASSWORD", "pw")
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    role = _make_role()
+    role.marketconfig.market_id = "BatteryMarket"
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 8, 10, 0), None)
+
+    role.clear(_brp_orderbook(), [product])
+
+    assert len(sent) == 1
+    assert sent[0].full_url == "http://brp/market_results"
+    assert (
+        sent[0].get_header("Authorization")
+        == "Basic " + base64.b64encode(b"assume:pw").decode()
+    )
+    payload = json.loads(sent[0].data)
+    assert payload["market_id"] == "BatteryMarket"
+    assert payload["start_time"] == "2026-01-01T10:00:00"
+    assert payload["end_time"] == "2026-01-08T10:00:00"
+    by_id = {o["bid_id"]: o for o in payload["orders"]}
+    assert set(by_id) == {"S_01_1", "B_01_1"}
+    assert by_id["S_01_1"]["start_time"] == "2026-01-01T10:00:00"
+    assert by_id["S_01_1"]["matches"] == [
+        {"bid_id": "B_01_1", "blockchain_address": "0xB1", "volume": 3, "price": 10}
+    ]
+    assert by_id["B_01_1"]["blockchain_address"] == "0xB1"
+
+
+def test_clear_sends_delivery_period_to_brp_without_trades(monkeypatch):
+    sent = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout):
+        sent.append(json.loads(request.data))
+        return FakeResponse()
+
+    monkeypatch.setattr(module, "BRP_MARKET_RESULTS_URL", "http://brp/market_results")
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    role = _make_role()
+    role.marketconfig.market_id = "BatteryMarket"
+    product = (datetime(2026, 1, 1, 10, 0), datetime(2026, 1, 8, 10, 0), None)
+    orderbook = [
+        {"bid_id": "s1", "volume": 5, "price": 12, "blockchain_address": "0xS1"},
+        {"bid_id": "d1", "volume": -5, "price": 10, "blockchain_address": "0xD1"},
+    ]
+
+    accepted_orders, _, _, _ = role.clear(orderbook, [product])
+
+    assert accepted_orders == []
+    assert sent == [
+        {
+            "market_id": "BatteryMarket",
+            "start_time": "2026-01-01T10:00:00",
+            "end_time": "2026-01-08T10:00:00",
+            "orders": [],
+        }
+    ]
