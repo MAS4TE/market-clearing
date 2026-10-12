@@ -74,14 +74,24 @@ of the location. Rejected orders get `"[]"`.
 If the environment variable `BRP_MARKET_RESULTS_URL` is set, `clear()` sends the delivery
 period of the product (`start_time`, `end_time`) and the accepted orders (with `unit_id`,
 `blockchain_address`, delivery period, accepted volume and price and the `matches`) as JSON
-to that URL, using HTTP Basic Auth with the password from `BRP_API_PASSWORD`. The delivery
-period is sent also if no order was accepted, so the BRP can replace an earlier result for
-it. If it is not set, nothing is sent. A BRP that cannot be reached is
-logged as an error and does not stop the clearing.
+to that URL, using HTTP Basic Auth with the password from `BRP_MARKET_RESULTS_PASSWORD`
+(the BRP's `MARKET_RESULTS_PASSWORD`, not the password of the agents). The delivery period is
+sent also if no order was accepted, so the BRP can replace an earlier result for it. If
+`BRP_MARKET_RESULTS_URL` is not set, nothing is sent. A BRP that cannot be reached is logged
+as an error and does not stop the clearing.
+
+| Variable | Purpose |
+| -------- | ------- |
+| `BRP_MARKET_RESULTS_URL` | `POST /market_results` endpoint of the BRP; unset = nothing is sent |
+| `BRP_MARKET_RESULTS_PASSWORD` | the BRP's `MARKET_RESULTS_PASSWORD` |
+
+[`example.env`](example.env) lists them. The package does not load `.env` files itself; set
+the variables in the environment of the simulation before `mas4te_market_clearing` is
+imported, e.g.:
 
 ```bash
-export BRP_MARKET_RESULTS_URL=https://mas4te.nowum.fh-aachen.de/brp-api/market_results
-export BRP_API_PASSWORD=...
+set -a; source .env; set +a
+python simulation.py
 ```
 
 ## Multi-Market / Exclusive Bids
