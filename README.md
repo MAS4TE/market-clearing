@@ -1,5 +1,9 @@
 # MAS4TE Market Clearing
 
+> **Moved:** the clearing now lives in [MAS4TE/assume](https://github.com/MAS4TE/assume),
+> branch `mas4te`, as `mas4te/battery_market_clearing.py` (tests in
+> `tests/test_mas4te_battery_clearing.py`). This repository is no longer maintained.
+
 Market clearing mechanism for battery-related order books in the MAS4TE context.
 
 ## Features
